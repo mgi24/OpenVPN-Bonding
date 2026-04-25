@@ -9,7 +9,7 @@ fi
 # =========================
 # CONFIG
 # =========================
-TUN_NUM=2
+TUN_NUM=2 # jumlah tunnel OpenVPN
 BOND_IF="bond0"
 
 IFACE1="eth0"
@@ -54,28 +54,34 @@ done
 # =========================
 echo "[STEP 4] Restore default route"
 
+# hapus default route yang mungkin nyangkut (clean tapi aman)
+ip route del default dev ${IFACE1} 2>/dev/null || true
+ip route del default dev ${IFACE2} 2>/dev/null || true
+
 if [ -n "${GW1}" ]; then
   ip route replace default via ${GW1} dev ${IFACE1}
   echo "✔ default via ${IFACE1} (${GW1})"
+
 elif [ -n "${GW2}" ]; then
   ip route replace default via ${GW2} dev ${IFACE2}
   echo "✔ default via ${IFACE2} (${GW2})"
+
 else
-  echo "❌ Gagal restore default route!"
-  echo "⚠️ Coba DHCP ulang..."
+  echo "❌ Gateway tidak ditemukan!"
 
-  dhclient ${IFACE1} || true
-  dhclient ${IFACE2} || true
+  echo "⚠️ coba recovery tanpa DHCP..."
 
-  sleep 2
+  # ambil dari existing route (kadang masih ada di cache)
+  GW_FALLBACK=$(ip route | awk '/default/ {print $3}' | head -n1)
 
-  GW1=$(ip route show default dev ${IFACE1} | awk '{print $3}' | head -n1 || true)
-
-  if [ -n "${GW1}" ]; then
-    ip route add default via ${GW1} dev ${IFACE1}
-    echo "✔ recovered via DHCP (${IFACE1})"
+  if [ -n "${GW_FALLBACK}" ]; then
+    DEV_FALLBACK=$(ip route | awk '/default/ {print $5}' | head -n1)
+    ip route replace default via ${GW_FALLBACK} dev ${DEV_FALLBACK}
+    echo "✔ recovered dari existing route (${DEV_FALLBACK})"
   else
-    echo "❌ Masih gagal, cek manual!"
+    echo "❌ benar-benar tidak ada gateway"
+    echo "⚠️ restart network manual disarankan:"
+    echo "   nmcli networking off && nmcli networking on"
   fi
 fi
 
@@ -89,8 +95,10 @@ for i in $(seq 1 ${TUN_NUM}); do
 
   echo "  -> remove table ${TABLE}"
 
-  ip rule | grep ${TABLE} | while read -r line; do
-    PREF=$(echo "$line" | awk '{print $1}' | sed 's/://')
+  # ambil semua pref yang pakai table ini
+  PREFS=$(ip rule | awk -v t="${TABLE}" '$0 ~ t {gsub(":", "", $1); print $1}')
+
+  for PREF in ${PREFS}; do
     ip rule del pref ${PREF} 2>/dev/null || true
   done
 

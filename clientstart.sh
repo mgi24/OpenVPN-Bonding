@@ -9,12 +9,12 @@ fi
 # =========================
 # CONFIG
 # =========================
-TUN_NUM=2
+TUN_NUM=2 # jumlah tunnel OpenVPN
 BOND_IF="bond0"
 
 IFACE1="eth0"
 IFACE2="eth1"
-
+SERVER_IP="ganti ke IP server OpenVPN"
 BOND_IP="10.9.0.253"
 REMOTE_BOND_IP="10.9.0.254"
 
@@ -25,6 +25,29 @@ lsmod | grep bonding || { echo "❌ bonding gagal"; exit 1; }
 echo "[STEP 2] Cleanup lama (idempotent)"
 
 pkill openvpn 2>/dev/null || true
+netplan apply
+
+echo "[WAIT] tunggu interface ready..."
+
+for IFACE in ${IFACE1} ${IFACE2}; do
+  echo "  -> ${IFACE}"
+
+  for i in {1..10}; do
+    IP=$(ip -4 addr show ${IFACE} | awk '/inet / {print $2}' | cut -d/ -f1)
+
+    if [ -n "$IP" ]; then
+      echo "     IP ready: $IP"
+      break
+    fi
+
+    sleep 1
+  done
+
+  if [ -z "$IP" ]; then
+    echo "❌ ${IFACE} tidak dapat IP"
+    exit 1
+  fi
+done
 
 for i in $(seq 1 ${TUN_NUM}); do
   ip link set tap${i} down 2>/dev/null || true
@@ -64,10 +87,14 @@ for i in $(seq 1 ${TUN_NUM}); do
   echo "  -> bind ke ${IFACE}"
 
   IP=$(ip -4 addr show ${IFACE} | awk '/inet / {print $2}' | cut -d/ -f1)
-  GW=$(ip route show default dev ${IFACE} | awk '{print $3}')
+  GW=$(ip route show dev ${IFACE} | awk '/default/ {print $3}')
 
   echo "     IP=${IP} GW=${GW}"
-
+  if [ "${IFACE}" = "${IFACE1}" ]; then
+    GW1=${GW}
+  else
+    GW2=${GW}
+  fi
   TABLE="vpn${i}"
 
   ip rule add from ${IP} table ${TABLE} 2>/dev/null || true
@@ -109,8 +136,8 @@ done
 
 echo "[STEP 11A] Pastikan route ke server lewat WAN"
 
-ip route add 168.110.213.113 via 192.168.0.1 dev eth0 2>/dev/null || true
-ip route add 168.110.213.113 via 192.168.0.1 dev eth1 2>/dev/null || true
+ip route replace ${SERVER_IP} via ${GW1} dev ${IFACE1}
+ip route replace ${SERVER_IP} via ${GW2} dev ${IFACE2}
 
 echo "[STEP 11] Set default route via bond (clean)"
 
